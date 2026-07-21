@@ -89,3 +89,39 @@ bool sendInts(int fd, const vector<int>& data) {
     }
     return true;
 }
+
+// esp_comm.cpp — add
+bool receivePacket(int fd, int32_t* out, uint8_t& count) {
+    uint8_t header[2];
+    if (read(fd, header, 2) != 2) return false;
+    if (header[0] != HEADER1 || header[1] != HEADER2) return false;
+
+    uint8_t seq;
+    read(fd, &seq, 1);
+    read(fd, &count, 1);
+
+    int payloadBytes = count * sizeof(int32_t);
+    if (read(fd, out, payloadBytes) != payloadBytes) return false;
+
+    uint8_t checksum;
+    read(fd, &checksum, 1);
+    if (computeChecksum((uint8_t*)out, payloadBytes) != checksum) return false;
+
+    uint8_t ack = 0x06;
+    write(fd, &ack, 1);
+    return true;
+}
+
+bool receiveInts(int fd, std::vector<int>& out, int expected_count) {
+    out.assign(expected_count, 0);
+    int received = 0;
+    while (received < expected_count) {
+        int32_t chunk[CHUNK_SIZE];
+        uint8_t count;
+        if (!receivePacket(fd, chunk, count)) continue;
+        for (int i = 0; i < count && received + i < expected_count; i++)
+            out[received + i] = chunk[i];
+        received += count;
+    }
+    return true;
+}
