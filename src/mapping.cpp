@@ -3,6 +3,11 @@
 #include <chrono>
 using namespace std;
 
+
+const int MAP_WIDTH = 70;
+const int MAP_HEIGHT = 70;
+const float RESOLUTION = 0.08f;
+
 OccupancyGrid::OccupancyGrid(int w, int h, float res, float fx_, float fy_, float cx_, float cy_) {
     map_width = w; map_height = h; resolution = res;
     fx = fx_; fy = fy_; cx = cx_; cy = cy_;
@@ -91,20 +96,7 @@ vector<int> OccupancyGrid::getBinaryMap(float free_thresh, float occ_thresh) {
 
 
 
-vector<int> RunMappingSession(int scan_duration){
-    sl::Camera zed; 
-    sl::InitParameters init_param;
-    init_param.camera_resolution = sl::RESOLUTION::VGA;
-    init_param.camera_fps = 30;
-    init_param.coordinate_units = sl::UNIT::METER;
-    init_param.coordinate_system = sl::COORDINATE_SYSTEM::RIGHT_HANDED_Z_UP;
-
-    if(zed.open(init_param) != sl::ERROR_CODE::SUCCESS){
-        return{};
-    }
-
-    sl::PositionalTrackingParameters tracking_param;
-    zed.enablePositionalTracking(tracking_param);
+vector<int> RunMappingSession(sl::Camera& zed, int scan_duration){
 
     sl::Pose pose;
     zed.getPosition(pose, sl::REFERENCE_FRAME::WORLD);
@@ -117,7 +109,7 @@ vector<int> RunMappingSession(int scan_duration){
     float fx = calib.fx, fy = calib.fy, cx = calib.cx, cy = calib.cy;
 
     //create the grid map with the basic info
-    OccupancyGrid grid_map(70 , 70, 0.08, fx, fy, cx, cy);
+    OccupancyGrid grid_map(MAP_WIDTH , MAP_HEIGHT, RESOLUTION, fx, fy, cx, cy);
 
     auto start_time = std::chrono::steady_clock::now();
 
@@ -139,7 +131,6 @@ vector<int> RunMappingSession(int scan_duration){
             grid_map.updateAll(robot_x, robot_y, world_pts);
         }
     }
-    zed.close();  
 
     vector<int> binary_map = grid_map.getBinaryMap();
 

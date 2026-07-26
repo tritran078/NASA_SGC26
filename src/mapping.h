@@ -22,5 +22,5 @@ struct OccupancyGrid {
     vector<int> getBinaryMap(float free_thresh = 0.4, float occ_thresh = 0.6);
 };
 
-vector<int> RunMappingSession(int scan_duration = 10);
+vector<int> RunMappingSession(sl::Camera& zed, int scan_duration = 10);
 
