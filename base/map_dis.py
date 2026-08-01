@@ -11,8 +11,8 @@ LOCAL_SIZE = 70 #scanned map size
 
 CENTER = (MASTER_W // 2, MASTER_H // 2) #center of master map
 
-color_lookup = np.array([[255, 255, 255], [0, 0, 0], [128, 128, 128],[255,0,0]]) # color chart for displaying in map
-""" 0: free, 1: occupied, 2: unknown, 3: rover """
+color_lookup = np.array([[255, 255, 255], [0, 0, 0], [128, 128, 128],[255,0,0], [0,255,0]]) # color chart for displaying in map
+""" 0: free(white), 1: occupied(black), 2: unknown(gray), 3: rover(red), 4: path(green)"""
 
 
 def create_master_map():
@@ -54,12 +54,13 @@ def map_display(map_array, rover_pose):
     grid = np.array(map_array).reshape((MASTER_H, MASTER_W)).copy()  # copy so we don't mutate the real master_map
 
     rx, ry = rover_pose
-    grid[ry][rx] = 3
+    grid[ry][rx] = 3 # set the rover position to 3 for display
 
     color_map = color_lookup[grid]
 
     plt.imshow(color_map)
-    plt.show()
+    plt.show(block = False)
+    plt.pause(0.1)
 
 def RunMapUpdate(master_map, data):
     # get map and pose
@@ -71,6 +72,23 @@ def RunMapUpdate(master_map, data):
     #display map
     map_display(master_map, rover_grid_coord)
     print("the rover scanned heading was ", pose[2])
+
+
+def map_display_with_path(map_array, rover_pose, path=None):
+    grid = np.array(map_array).reshape((MASTER_H, MASTER_W)).copy()
+
+    if path:
+        for (x, y) in path:
+            if grid[y][x] == 0:
+                grid[y][x] = 4  # reuse rover-color slot to show path
+
+    rx, ry = rover_pose
+    grid[ry][rx] = 3
+
+    color_map = color_lookup[grid]
+    plt.imshow(color_map)
+    plt.show(block=False)
+    input("Press Enter to exit...")
 
 
 

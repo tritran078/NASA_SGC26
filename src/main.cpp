@@ -73,13 +73,15 @@ int main(){
 
 
         //send the grid map to ESP LoRa
-        bool sent_succeed = sendInts(esp_Lora, grid_map); //sendInts() send integer list to whatever ESP, return fail/success
+        bool sent_succeed = writeGridBytes(esp_Lora, grid_map); //send grid map to LoRa ESP
         if (!sent_succeed) {std::cout << "failed to send grid map to LoRa ESP";}
 
         //wait and receive the path from ESP LoRa
         std::vector<int> path_data;
-        bool path_received = receiveInts(esp_Lora, path_data, PATH_SIZE);
+        bool path_received = readWaypointBytes(esp_Lora, path_data);
         if (!path_received) {std::cout << "failed to receive path data from LoRa ESP";}
+
+
 
         // --------- CONTROL CODE ---------
         int count = 0;
@@ -120,14 +122,5 @@ int main(){
     closeSerial(esp_cam_turn);
     closeSerial(esp_motor);
     zed.close();
-
-    //test if send succeed
-    if(sent_succeed){
-        std::cout << "sent succeeded";
-        return 0;
-    } else {
-        std::cout << "print no good";
-        return 1;
-    }
 
 }

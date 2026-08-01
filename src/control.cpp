@@ -33,8 +33,8 @@ vector<int> controlLoop(vector<float> next_coord,sl::Camera& zed){
     getCurrentPose(zed, x, y, yaw);
 
     //get the next coord in real world
-    float y_coord = next_coord[0];
-    float x_coord = next_coord[1];
+    float y_coord = next_coord[1];
+    float x_coord = next_coord[0];
 
     //calculate dy and dx
     float dy = y_coord - y;
