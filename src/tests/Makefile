@@ -5,7 +5,7 @@
 # from the parent dir via VPATH -- main.cpp is never touched.
 
 CXX = g++
-CXXFLAGS = -std=c++17 -I.. -I/usr/local/zed/include -I/usr/local/cuda-10.2/targets/aarch64-linux/include
+CXXFLAGS = -std=c++17 -I.. -I../shared -I/usr/local/zed/include -I/usr/local/cuda-10.2/targets/aarch64-linux/include
 LDFLAGS = -L/usr/local/zed/lib -lsl_zed \
           $(shell pkg-config --cflags --libs opencv4) \
           -lcuda -lcudart -L/usr/local/cuda-10.2/targets/aarch64-linux/lib

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <vector>
 #include <sl/Camera.hpp>
 using namespace std;
@@ -19,8 +20,8 @@ struct OccupancyGrid {
     void updateAll(int robot_pos_x, int robot_pos_y, vector<pair<float,float>>& robot_frame_map);
     void bresenham(int x0, int y0, int x1, int y1);
     void updateCell(int x, int y, float delta);
-    vector<int> getBinaryMap(float free_thresh = 0.4, float occ_thresh = 0.6);
+    vector<uint8_t> getBinaryMap(float free_thresh = 0.4, float occ_thresh = 0.6);
 };
 
-vector<int> RunMappingSession(sl::Camera& zed, int scan_duration = 10);
+vector<uint8_t> RunMappingSession(sl::Camera& zed, int scan_duration = 10);
 

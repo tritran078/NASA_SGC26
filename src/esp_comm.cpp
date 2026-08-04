@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cstring>
 #include <cstdint>
 #include <vector>
@@ -128,43 +129,50 @@ bool receiveInts(int fd, std::vector<int>& out, int expected_count) {
 
 // --- esp_Lora link only: raw byte protocol, matches Occupancy-Grid-Compression firmware ---
 
-// Rover firmware expects exactly GRID_ROWS*GRID_COLS raw bytes (0/1/2 per cell),
-// no header, no checksum.
-bool writeGridBytes(int fd, const vector<int>& grid_map) {
-    vector<uint8_t> bytes(grid_map.begin(), grid_map.end());
+// Rover firmware expects GRID_ROWS*GRID_COLS raw cell bytes (0/1/2 per cell),
+// no header, no checksum, followed by the rover's grid-cell position so the
+// base station can place the local scan on the master map.
+bool writeGridAndPose(int fd, const vector<uint8_t>& grid_map, int16_t x, int16_t y) {
+    vector<uint8_t> bytes = grid_map;
+    twoway::encodePosition(bytes, x, y);
     ssize_t written = write(fd, bytes.data(), bytes.size());
     return written == (ssize_t)bytes.size();
 }
 
-// Rover firmware sends back: [count:1][x:2][y:2] repeated, little-endian int16.
-// Blocks/retries across read timeouts (VTIME) instead of bailing on the first
-// empty read, since the ESP32 may still be mid-LoRa-roundtrip.
-bool readWaypointBytes(int fd, vector<int>& path_data, int max_timeouts) {
+// Rover firmware sends back: [count:1][x:2][y:2] repeated, little-endian int16
+// (or count == twoway::BAD_DATA_SENTINEL if the rover never got a real
+// response). Blocks/retries across read timeouts (VTIME) instead of bailing
+// on the first empty read, since the ESP32 may still be mid-LoRa-roundtrip.
+bool readWaypointBytes(int fd, vector<twoway::Waypoint>& waypoints, bool& badData, bool& gaveUp,
+                        int max_timeouts) {
+    waypoints.clear();
+    badData = false;
+    gaveUp = false;
+
     uint8_t count;
     int timeouts = 0;
     while (read(fd, &count, 1) != 1) {
-        if (++timeouts > max_timeouts) return false;
+        if (++timeouts > max_timeouts) { gaveUp = true; return false; }
     }
 
-    vector<uint8_t> wp_bytes(count * 4);
-    ssize_t total = 0;
+    if (count == twoway::BAD_DATA_SENTINEL) {
+        badData = true;
+        return true;
+    }
+
+    vector<uint8_t> wp_bytes(static_cast<size_t>(count) * 4);
+    size_t total = 0;
     timeouts = 0;
-    while (total < (ssize_t)wp_bytes.size()) {
+    while (total < wp_bytes.size()) {
         ssize_t n = read(fd, wp_bytes.data() + total, wp_bytes.size() - total);
         if (n <= 0) {
-            if (++timeouts > max_timeouts) return false;
+            if (++timeouts > max_timeouts) { gaveUp = true; return false; }
             continue;
         }
         total += n;
         timeouts = 0;
     }
 
-    path_data.clear();
-    for (int i = 0; i < count; i++) {
-        int16_t x = wp_bytes[i*4] | (wp_bytes[i*4+1] << 8);
-        int16_t y = wp_bytes[i*4+2] | (wp_bytes[i*4+3] << 8);
-        path_data.push_back(x);
-        path_data.push_back(y);
-    }
-    return true;
+    waypoints = twoway::decodeResponse(count, wp_bytes, badData, gaveUp);
+    return !badData && !gaveUp;
 }

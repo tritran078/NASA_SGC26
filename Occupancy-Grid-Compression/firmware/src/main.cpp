@@ -13,14 +13,16 @@
 using namespace compressor;
 
 // Bidirectional protocol over one LoRa link, distinguished by messageId:
-//   GRID_MESSAGE_ID             (rover -> base)  : occupancy grid, via splitcodec (values+counts streams)
+//   GRID_MESSAGE_ID             (rover -> base)  : occupancy grid, via splitcodec (values+counts
+//                                                  streams), plus the rover's grid-cell position
+//                                                  (position stream) so base can place the scan.
 //   FRAGMENT_STATUS_MESSAGE_ID  (base -> rover)  : which grid fragments base is still missing, so rover
 //                                                  can resend exactly those instead of everything (ARQ)
 //   INSTRUCTIONS_MESSAGE_ID     (base -> rover)  : movement waypoints, raw bytes (no RLE -- a handful of
 //                                                  waypoints has nothing for run-length to exploit)
 //
 // ARQ over the grid link: base tracks a "quiet period" (QUIET_PERIOD_MS of no new grid fragments
-// arriving) and, once elapsed without both streams complete, sends a status report naming which
+// arriving) and, once elapsed without all three streams complete, sends a status report naming which
 // fragment indices are still missing per stream. Each stream's status is one of three states, not a
 // plain missing-count, because "0 missing" is ambiguous between "confirmed complete" and "nothing
 // received yet" (the reassembler can't report indices for a stream it doesn't know totalFragments
@@ -36,11 +38,13 @@ using namespace compressor;
 // complete.
 //
 // Serial legs (real, not synthetic):
-//   Jetson -> ROVER   : a flat vector of GRID_ROWS*GRID_COLS cell bytes (0/1/2), no header. Both ends
+//   Jetson -> ROVER   : a flat vector of GRID_ROWS*GRID_COLS cell bytes (0/1/2) followed by the
+//                       rover's [x:2][y:2] grid-cell position, little-endian, no header. Both ends
 //                       must already agree on GRID_ROWS/GRID_COLS since this framing has no length
-//                       field -- if the Jetson ever needs to send a *variable* size, this needs a
-//                       [rows][cols] header added, matching the BASE->computer leg below.
-//   BASE -> computer  : [rows:2][cols:2][cell bytes...], all little-endian.
+//                       field.
+//   BASE -> computer  : [cell bytes...][x:2][y:2], little-endian -- same fixed-size, no-header shape
+//                       as the Jetson->ROVER leg above, since GRID_ROWS/GRID_COLS are fixed on both
+//                       ends.
 //   computer -> BASE  : [waypointCount:1][x:2][y:2] repeated -- same (x,y) encoding as the LoRa leg,
 //                       with a count prefix added since a raw serial stream needs an explicit boundary
 //                       that the LoRa leg gets for free from the reassembled buffer's own length.
@@ -56,9 +60,11 @@ namespace{
 	const uint16_t FRAGMENT_STATUS_MESSAGE_ID = 3;
 	const uint8_t VALUES_STREAM_ID = 0;
 	const uint8_t COUNTS_STREAM_ID = 1;
+	const uint8_t POSITION_STREAM_ID = 2;
 	const uint8_t INSTRUCTIONS_STREAM_ID = 0;
 	const uint8_t STATUS_STREAM_ID = 0;
 	const uint8_t VALUE_BIT_WIDTH = 2; // occupancy values are 0/1/2, 11 reserved
+	const size_t POSITION_BYTES = 4; // [x:2][y:2], little-endian int16
 
 	// Fixed grid size shared by both ends of the Jetson<->ROVER serial link
 	// (see header comment -- that framing has no length field of its own).
@@ -104,13 +110,15 @@ namespace{
 		return waypoints;
 	}
 
-	// Fragment-status report, covering both grid streams in one message:
+	// Fragment-status report, covering all three grid streams in one message:
 	//   [subjectMessageId:2]
-	//   [valuesStatus:1] (+ [count:1][idx:2]*count only if valuesStatus == STATUS_PARTIAL)
-	//   [countsStatus:1] (+ [count:1][idx:2]*count only if countsStatus == STATUS_PARTIAL)
+	//   [valuesStatus:1]   (+ [count:1][idx:2]*count only if valuesStatus == STATUS_PARTIAL)
+	//   [countsStatus:1]   (+ [count:1][idx:2]*count only if countsStatus == STATUS_PARTIAL)
+	//   [positionStatus:1] (+ [count:1][idx:2]*count only if positionStatus == STATUS_PARTIAL)
 	std::vector<uint8_t> encodeStatusReport(uint16_t subjectMessageId,
 	                                         uint8_t valuesStatus, const std::vector<uint16_t>& valuesMissing,
-	                                         uint8_t countsStatus, const std::vector<uint16_t>& countsMissing){
+	                                         uint8_t countsStatus, const std::vector<uint16_t>& countsMissing,
+	                                         uint8_t positionStatus, const std::vector<uint16_t>& positionMissing){
 		std::vector<uint8_t> bytes;
 		bytes.push_back(static_cast<uint8_t>(subjectMessageId & 0xFF));
 		bytes.push_back(static_cast<uint8_t>((subjectMessageId >> 8) & 0xFF));
@@ -132,6 +140,15 @@ namespace{
 				bytes.push_back(static_cast<uint8_t>((idx >> 8) & 0xFF));
 			}
 		}
+
+		bytes.push_back(positionStatus);
+		if(positionStatus == STATUS_PARTIAL){
+			bytes.push_back(static_cast<uint8_t>(positionMissing.size()));
+			for(uint16_t idx : positionMissing){
+				bytes.push_back(static_cast<uint8_t>(idx & 0xFF));
+				bytes.push_back(static_cast<uint8_t>((idx >> 8) & 0xFF));
+			}
+		}
 		return bytes;
 	}
 
@@ -142,6 +159,8 @@ namespace{
 		std::vector<uint16_t> valuesMissing;
 		uint8_t countsStatus = STATUS_NOTHING_RECEIVED;
 		std::vector<uint16_t> countsMissing;
+		uint8_t positionStatus = STATUS_NOTHING_RECEIVED;
+		std::vector<uint16_t> positionMissing;
 	};
 
 	bool readMissingList(const std::vector<uint8_t>& bytes, size_t& pos, std::vector<uint16_t>& out){
@@ -172,6 +191,12 @@ namespace{
 		report.countsStatus = bytes[pos++];
 		if(report.countsStatus == STATUS_PARTIAL){
 			if(!readMissingList(bytes, pos, report.countsMissing)) return report;
+		}
+
+		if(pos >= bytes.size()) return report;
+		report.positionStatus = bytes[pos++];
+		if(report.positionStatus == STATUS_PARTIAL){
+			if(!readMissingList(bytes, pos, report.positionMissing)) return report;
 		}
 
 		report.valid = true;
@@ -257,10 +282,13 @@ namespace{
 
 	std::vector<packetizer::Packet> gridValuesPackets;
 	std::vector<packetizer::Packet> gridCountsPackets;
+	std::vector<packetizer::Packet> gridPositionPackets;
 	bool valuesDone = false;
 	bool countsDone = false;
+	bool positionDone = false;
 	int valuesRetryRound = 0;
 	int countsRetryRound = 0;
+	int positionRetryRound = 0;
 	unsigned long lastArqActivityMillis = 0;
 }
 
@@ -274,7 +302,8 @@ void loop(){
 		Serial.printf("Waiting for a %dx%d grid (%d bytes) from the Jetson over Serial2...\n",
 		              GRID_ROWS, GRID_COLS, GRID_ROWS * GRID_COLS);
 		std::vector<uint8_t> cellBytes = readExactDataBytes(static_cast<size_t>(GRID_ROWS) * GRID_COLS);
-		Serial.println("Grid received from Jetson.");
+		std::vector<uint8_t> positionBytes = readExactDataBytes(POSITION_BYTES);
+		Serial.println("Grid + position received from Jetson.");
 
 		Grid grid = rebuildGrid(cellBytes, GRID_ROWS, GRID_COLS);
 		SymbolStream stream = toSymbolStream(grid);
@@ -286,6 +315,7 @@ void loop(){
 
 		gridValuesPackets = sendStream(GRID_MESSAGE_ID, streams.valuesBytes, VALUES_STREAM_ID, "grid values");
 		gridCountsPackets = sendStream(GRID_MESSAGE_ID, streams.countsBytes, COUNTS_STREAM_ID, "grid counts");
+		gridPositionPackets = sendStream(GRID_MESSAGE_ID, positionBytes, POSITION_STREAM_ID, "position");
 		Serial.println("Grid sent. Waiting for fragment-status reports from base...");
 		sentGrid = true;
 		lastArqActivityMillis = millis();
@@ -327,11 +357,22 @@ void loop(){
 						Serial.println("Giving up on counts stream after max retries.");
 						countsDone = true;
 					}
+
+					if(report.positionStatus == STATUS_COMPLETE){
+						positionDone = true;
+					} else if(!positionDone && positionRetryRound < MAX_RETRY_ROUNDS){
+						positionRetryRound++;
+						if(report.positionStatus == STATUS_PARTIAL) resendFragments(gridPositionPackets, report.positionMissing, "position");
+						else resendAllFragments(gridPositionPackets, "position"); // STATUS_NOTHING_RECEIVED
+					} else if(!positionDone){
+						Serial.println("Giving up on position stream after max retries.");
+						positionDone = true;
+					}
 				}
 			}
 		}
 
-		if(!valuesDone || !countsDone){
+		if(!valuesDone || !countsDone || !positionDone){
 			if(millis() - lastArqActivityMillis > REPORT_TIMEOUT_MS){
 				Serial.println("No fragment-status report in time -- assuming it was lost, resending as a fallback.");
 				if(!valuesDone){
@@ -341,6 +382,10 @@ void loop(){
 				if(!countsDone){
 					if(countsRetryRound < MAX_RETRY_ROUNDS){ countsRetryRound++; resendAllFragments(gridCountsPackets, "counts"); }
 					else { Serial.println("Giving up on counts stream after max retries."); countsDone = true; }
+				}
+				if(!positionDone){
+					if(positionRetryRound < MAX_RETRY_ROUNDS){ positionRetryRound++; resendAllFragments(gridPositionPackets, "position"); }
+					else { Serial.println("Giving up on position stream after max retries."); positionDone = true; }
 				}
 				lastArqActivityMillis = millis();
 			}
@@ -428,11 +473,13 @@ void loop(){
 
 	bool valuesComplete = reassembler.isComplete(GRID_MESSAGE_ID, VALUES_STREAM_ID);
 	bool countsComplete = reassembler.isComplete(GRID_MESSAGE_ID, COUNTS_STREAM_ID);
+	bool positionComplete = reassembler.isComplete(GRID_MESSAGE_ID, POSITION_STREAM_ID);
 
-	if(valuesComplete && countsComplete){
-		std::vector<uint8_t> valuesBytes, countsBytes;
+	if(valuesComplete && countsComplete && positionComplete){
+		std::vector<uint8_t> valuesBytes, countsBytes, positionBytes;
 		reassembler.tryGetCompleteStream(GRID_MESSAGE_ID, VALUES_STREAM_ID, valuesBytes);
 		reassembler.tryGetCompleteStream(GRID_MESSAGE_ID, COUNTS_STREAM_ID, countsBytes);
+		reassembler.tryGetCompleteStream(GRID_MESSAGE_ID, POSITION_STREAM_ID, positionBytes);
 
 		RLERuns runs;
 		bool decodeOk = splitcodec::decode(valuesBytes, countsBytes, VALUE_BIT_WIDTH, runs);
@@ -447,22 +494,19 @@ void loop(){
 		              static_cast<unsigned>(symbols.size()), static_cast<unsigned>(runs.values.size()));
 
 		// Final explicit "you're done" status report -- without this, the
-		// rover has no unambiguous signal that both streams succeeded (it
+		// rover has no unambiguous signal that all streams succeeded (it
 		// would just eventually time out on the last resend and give up).
-		std::vector<uint8_t> finalReport = encodeStatusReport(GRID_MESSAGE_ID, STATUS_COMPLETE, {}, STATUS_COMPLETE, {});
+		std::vector<uint8_t> finalReport = encodeStatusReport(GRID_MESSAGE_ID, STATUS_COMPLETE, {}, STATUS_COMPLETE, {}, STATUS_COMPLETE, {});
 		sendStream(FRAGMENT_STATUS_MESSAGE_ID, finalReport, STATUS_STREAM_ID, "final fragment status (complete)");
 		gotGrid = true;
 
-		// Forward the decompressed grid to the base-station computer over
-		// Serial2: [rows:2][cols:2][cell bytes...], little-endian. No
-		// trailing terminator -- the computer-side reader must read exactly
-		// 4 + rows*cols bytes and stop there.
-		Serial2.write(static_cast<uint8_t>(GRID_ROWS & 0xFF));
-		Serial2.write(static_cast<uint8_t>((GRID_ROWS >> 8) & 0xFF));
-		Serial2.write(static_cast<uint8_t>(GRID_COLS & 0xFF));
-		Serial2.write(static_cast<uint8_t>((GRID_COLS >> 8) & 0xFF));
+		// Forward the decompressed grid + rover position to the base-station
+		// computer over Serial2: [cell bytes...][x:2][y:2], little-endian, no
+		// header -- the computer-side reader must read exactly
+		// rows*cols + 4 bytes and stop there (rows/cols are fixed on both ends).
 		Serial2.write(symbols.data(), symbols.size());
-		Serial.println("Grid forwarded to base-station computer over Serial2. Waiting for path instructions...");
+		Serial2.write(positionBytes.data(), positionBytes.size());
+		Serial.println("Grid + position forwarded to base-station computer over Serial2. Waiting for path instructions...");
 
 		// Block until the base-station computer sends back:
 		// [waypointCount:1][x:2][y:2] repeated.
@@ -505,8 +549,19 @@ void loop(){
 			countsStatus = countsMissing.empty() ? STATUS_NOTHING_RECEIVED : STATUS_PARTIAL;
 		}
 
+		uint8_t positionStatus;
+		std::vector<uint16_t> positionMissing;
+		if(positionComplete){
+			positionStatus = STATUS_COMPLETE;
+		} else {
+			positionMissing = reassembler.missingFragments(GRID_MESSAGE_ID, POSITION_STREAM_ID);
+			positionStatus = positionMissing.empty() ? STATUS_NOTHING_RECEIVED : STATUS_PARTIAL;
+		}
+
 		Serial.println("Quiet period elapsed with the grid still incomplete -- sending fragment-status report.");
-		std::vector<uint8_t> reportBytes = encodeStatusReport(GRID_MESSAGE_ID, valuesStatus, valuesMissing, countsStatus, countsMissing);
+		std::vector<uint8_t> reportBytes = encodeStatusReport(GRID_MESSAGE_ID, valuesStatus, valuesMissing,
+		                                                       countsStatus, countsMissing,
+		                                                       positionStatus, positionMissing);
 		sendStream(FRAGMENT_STATUS_MESSAGE_ID, reportBytes, STATUS_STREAM_ID, "fragment status");
 		reportSentForThisQuietPeriod = true;
 	}

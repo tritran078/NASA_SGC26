@@ -6,6 +6,8 @@
 #include <iostream>
 #include <sl/Camera.hpp>
 #include <chrono>
+#include <cmath>
+#include <thread>
 
 int main(){
 
@@ -17,14 +19,11 @@ int main(){
     init_param.coordinate_units = sl::UNIT::METER;
     init_param.coordinate_system = sl::COORDINATE_SYSTEM::RIGHT_HANDED_Z_UP;
 
-    //init path length
-    const int MAX_PATH_POINTS = 50; 
-    const int PATH_SIZE = MAX_PATH_POINTS * 2; // 2 for x and y
     const float TOLERANCE = 0.20; //tolerance for navigation = 20cm
 
     const float RESOLUTION = 0.08;
 
-    const float RATE = 50; //50ms = 20hz
+    const int RATE = 50; //50ms = 20hz
 
     //test open zed cam
     if (zed.open(init_param) != sl::ERROR_CODE::SUCCESS) {
@@ -69,35 +68,42 @@ int main(){
         if (!turning) {std::cout << "failed to send start signal to camera turn ESP";}
 
         //mapping for 10 seconds
-        std::vector<int> grid_map = RunMappingSession(zed, 10); //mapping
+        std::vector<uint8_t> grid_map = RunMappingSession(zed, 10); //mapping
 
+        //get current pose and convert to grid cells for the base station
+        float pose_x, pose_y, pose_yaw;
+        getCurrentPose(zed, pose_x, pose_y, pose_yaw);
+        int16_t grid_x = static_cast<int16_t>(std::round(pose_x / RESOLUTION));
+        int16_t grid_y = static_cast<int16_t>(std::round(pose_y / RESOLUTION));
 
-        //send the grid map to ESP LoRa
-        bool sent_succeed = writeGridBytes(esp_Lora, grid_map); //send grid map to LoRa ESP
+        //send the grid map + rover position to ESP LoRa
+        bool sent_succeed = writeGridAndPose(esp_Lora, grid_map, grid_x, grid_y); //send grid map to LoRa ESP
         if (!sent_succeed) {std::cout << "failed to send grid map to LoRa ESP";}
 
         //wait and receive the path from ESP LoRa
-        std::vector<int> path_data;
-        bool path_received = readWaypointBytes(esp_Lora, path_data);
-        if (!path_received) {std::cout << "failed to receive path data from LoRa ESP";}
-
-
+        std::vector<twoway::Waypoint> waypoints;
+        bool badData = false, gaveUp = false;
+        bool path_received = readWaypointBytes(esp_Lora, waypoints, badData, gaveUp);
+        if (!path_received) {
+            if (badData) { std::cout << "LoRa ESP reported no path data"; }
+            else if (gaveUp) { std::cout << "gave up waiting for path data from LoRa ESP"; }
+            continue; //nothing to drive to this cycle
+        }
 
         // --------- CONTROL CODE ---------
-        int count = 0;
-        for(int i =0; i < (path_data.size() - 1)/2; i++){
+        for (const twoway::Waypoint& wp : waypoints) {
             //get next coord
-            std::vector<float> coord = {path_data[count] * RESOLUTION, path_data[count+1] * RESOLUTION};
-            
+            std::vector<float> coord = {wp.x * RESOLUTION, wp.y * RESOLUTION};
+
             bool reached = false;
-            
+
             while(!reached){
-                //calculate distance from coord        
+                //calculate distance from coord
                 float x,y,yaw;
                 getCurrentPose(zed, x,y,yaw);
                 float dy = coord[0] - y;
                 float dx = coord[1] - x;
-                
+
                 //get tolerance radius
                 float dist = sqrt(dx*dx + dy*dy);
 
@@ -109,12 +115,11 @@ int main(){
                     //send wheel speed
                     bool motor_bool = sendInts(esp_motor, wheel_speed);
                     if(!motor_bool){std::cout << "failed to send the coordinate";}
-                    
+
                     //loop again at this rate
                     std::this_thread::sleep_for(std::chrono::milliseconds(RATE));
                 }
             }
-            count +=2; //increase count get the next coord
         }
     }
 

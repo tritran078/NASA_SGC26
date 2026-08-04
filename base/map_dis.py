@@ -22,19 +22,19 @@ def create_master_map():
 def get_master_map(master_map):
     return master_map.copy() 
 
-def local_grid(map_array):
-    local_grid_flat = map_array[:4900] #1D map 
-    x,y,r = map_array[4900], map_array[4901], map_array[4902] #pose 
-    pose = x,y,r
-    local_grid = np.array(local_grid_flat, dtype=int).reshape((LOCAL_SIZE, LOCAL_SIZE)) # convert 1D array to 2D array 
-
-    return pose, local_grid
+def local_grid(grid_array):
+    # grid_array is just the flat LOCAL_SIZE*LOCAL_SIZE cell list -- pose
+    # travels separately over the wire, and heading isn't part of the
+    # protocol at all.
+    return np.array(grid_array, dtype=int).reshape((LOCAL_SIZE, LOCAL_SIZE)) # convert 1D array to 2D array
 
 def place_on_master(master_map, local_grid, pose):
-    x, y, heading = pose
+    x, y = pose
 
-    center_x = CENTER[0] + int(round(x / RESOLUTION))
-    center_y = CENTER[1] + int(round(y / RESOLUTION))
+    # x, y arrive pre-converted to grid cells (see src/main.cpp), so no
+    # RESOLUTION division here -- that would double-scale the position.
+    center_x = CENTER[0] + x
+    center_y = CENTER[1] + y
     half = LOCAL_SIZE // 2
 
     for ly in range(LOCAL_SIZE):
@@ -62,16 +62,17 @@ def map_display(map_array, rover_pose):
     plt.show(block = False)
     plt.pause(0.1)
 
-def RunMapUpdate(master_map, data):
-    # get map and pose
-    pose, local_map = local_grid(data)
+def RunMapUpdate(master_map, grid, pose):
+    # grid and pose arrive separately over the wire -- see main_base.py
+    local_map = local_grid(grid)
 
     #write new map and pose into master map
     rover_grid_coord = place_on_master(master_map, local_map, pose)
 
     #display map
     map_display(master_map, rover_grid_coord)
-    print("the rover scanned heading was ", pose[2])
+
+    return rover_grid_coord
 
 
 def map_display_with_path(map_array, rover_pose, path=None):

@@ -1,6 +1,8 @@
 #include "mapping.h"
+#include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
 using namespace std;
 
 
@@ -84,8 +86,8 @@ void OccupancyGrid::updateCell(int x, int y, float delta) {
     data[index] = std::max(-5.0f, std::min(5.0f, data[index]));
 }
 
-vector<int> OccupancyGrid::getBinaryMap(float free_thresh, float occ_thresh) {
-    vector<int> binary_map(map_width * map_height, 2);
+vector<uint8_t> OccupancyGrid::getBinaryMap(float free_thresh, float occ_thresh) {
+    vector<uint8_t> binary_map(map_width * map_height, 2);
     for (int i = 0; i < map_width * map_height; ++i) {
         float prob = 1.0f - 1.0f / (1.0f + exp(data[i]));
         if (prob > occ_thresh) binary_map[i] = 1;
@@ -96,7 +98,7 @@ vector<int> OccupancyGrid::getBinaryMap(float free_thresh, float occ_thresh) {
 
 
 
-vector<int> RunMappingSession(sl::Camera& zed, int scan_duration){
+vector<uint8_t> RunMappingSession(sl::Camera& zed, int scan_duration){
 
     sl::Pose pose;
     zed.getPosition(pose, sl::REFERENCE_FRAME::WORLD);
@@ -132,7 +134,7 @@ vector<int> RunMappingSession(sl::Camera& zed, int scan_duration){
         }
     }
 
-    vector<int> binary_map = grid_map.getBinaryMap();
+    vector<uint8_t> binary_map = grid_map.getBinaryMap();
 
     return binary_map;
 }
