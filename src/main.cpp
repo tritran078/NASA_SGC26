@@ -11,7 +11,7 @@
 
 int main(){
 
-    //init zed
+    //-------------- ZED Camera Setup ------------
     sl::Camera zed;
     sl::InitParameters init_param;
     init_param.camera_resolution = sl::RESOLUTION::VGA;
@@ -19,11 +19,15 @@ int main(){
     init_param.coordinate_units = sl::UNIT::METER;
     init_param.coordinate_system = sl::COORDINATE_SYSTEM::RIGHT_HANDED_Z_UP;
 
+
+    //-------------- Constants ------------
     const float TOLERANCE = 0.20; //tolerance for navigation = 20cm
 
-    const float RESOLUTION = 0.08;
+    const float RESOLUTION = 0.08; //resolution of the grid map = 8cm
 
     const int RATE = 50; //50ms = 20hz
+
+
 
     //test open zed cam
     if (zed.open(init_param) != sl::ERROR_CODE::SUCCESS) {
@@ -34,10 +38,11 @@ int main(){
     //positional tracking
     sl::PositionalTrackingParameters tracking_param;
     zed.enablePositionalTracking(tracking_param);
-
+    //open UART serial connections to esp32
     int esp_Lora = openSerial("/dev/ttyUSB0", B115200); //open port to ESP LoRa
     int esp_cam_turn = openSerial("/dev/ttyUSB1", B115200); //open port to ESP camera turn
     int esp_motor = openSerial("/dev/ttyUSB2", B115200); //open port to ESP motor
+
 
     //if cannot open, return
     if(esp_Lora < 0){
@@ -55,32 +60,36 @@ int main(){
     }
 
 
+
+
     //make a timer to pull out tether from the car (5 seconds)
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
 
 
 
+    //---------------------- MAIN LOOP ----------------------
     while(true){
-        //signal to esp camera to start turning
+
+        //--------- CAMERA TURNING CODE ---------
         std::vector<int> start_signal = {1};
         bool turning = sendInts(esp_cam_turn, start_signal); //sendInts() signaling to start turning zed cam
         if (!turning) {std::cout << "failed to send start signal to camera turn ESP";}
 
-        //mapping for 10 seconds
+        //--------- MAPPING CODE ---------
         std::vector<uint8_t> grid_map = RunMappingSession(zed, 10); //mapping
 
-        //get current pose and convert to grid cells for the base station
+        //--------- GET CURRENT POSE ---------
         float pose_x, pose_y, pose_yaw;
         getCurrentPose(zed, pose_x, pose_y, pose_yaw);
         int16_t grid_x = static_cast<int16_t>(std::round(pose_x / RESOLUTION));
         int16_t grid_y = static_cast<int16_t>(std::round(pose_y / RESOLUTION));
 
-        //send the grid map + rover position to ESP LoRa
+        //--------- SEND GRID MAP AND POSE TO ESP LORA ---------
         bool sent_succeed = writeGridAndPose(esp_Lora, grid_map, grid_x, grid_y); //send grid map to LoRa ESP
         if (!sent_succeed) {std::cout << "failed to send grid map to LoRa ESP";}
 
-        //wait and receive the path from ESP LoRa
+        //--------- RECEIVE WAYPOINTS FROM ESP LORA ---------
         std::vector<twoway::Waypoint> waypoints;
         bool badData = false, gaveUp = false;
         bool path_received = readWaypointBytes(esp_Lora, waypoints, badData, gaveUp);
@@ -95,34 +104,19 @@ int main(){
             //get next coord
             std::vector<float> coord = {wp.x * RESOLUTION, wp.y * RESOLUTION};
 
-            bool reached = false;
+            float x,y,yaw;
+            getCurrentPose(zed, x,y,yaw);
+            float next_x = coord[0];
+            float next_y = coord[1];
 
-            while(!reached){
-                //calculate distance from coord
-                float x,y,yaw;
-                getCurrentPose(zed, x,y,yaw);
-                float dy = coord[0] - y;
-                float dx = coord[1] - x;
+            std::string msg = "--set-location " + std::to_string(x) + " " + std::to_string(y) + " "
+                    + std::to_string(next_x) + " " + std::to_string(next_y);
+            write(esp_motor, msg.c_str(), msg.size());
 
-                //get tolerance radius
-                float dist = sqrt(dx*dx + dy*dy);
-
-                //check if reached
-                if(dist < TOLERANCE){reached = true;}
-                else{
-                    //if not reached, get wheel speed for one time instance
-                    std::vector<int> wheel_speed = controlLoop(coord, zed);
-                    //send wheel speed
-                    bool motor_bool = sendInts(esp_motor, wheel_speed);
-                    if(!motor_bool){std::cout << "failed to send the coordinate";}
-
-                    //loop again at this rate
-                    std::this_thread::sleep_for(std::chrono::milliseconds(RATE));
-                }
-            }
         }
     }
-
+    
+    //close serial connections and zed cam
     closeSerial(esp_Lora);
     closeSerial(esp_cam_turn);
     closeSerial(esp_motor);
