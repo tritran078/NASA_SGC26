@@ -1,71 +1,86 @@
-//control code that:
-//receive next coord from path
-//compute dx and dy from current and next point
-//compute vx and vy needed proportional to constant KP
-//compute the individual wheel speed for each fo the 6 wheels
-//return the wheel speed to main
+// control.cpp
 
-#include <vector>
+#include "control.h"
+#include <sl/Camera.hpp>
+#include "esp_comm.h"
 #include <cmath>
 #include <chrono>
 #include <thread>
-#include "esp_comm.h"
-#include <sl/Camera.hpp>
+#include <cstdio>
+#include <iostream>
 
-using namespace std;
-
-const float KP = 600.0;
-
-
-
-void getCurrentPose(sl::Camera& zed, float& x, float& y, float& yaw) {
-    sl::Pose pose;
-    zed.getPosition(pose, sl::REFERENCE_FRAME::WORLD);
-    x = pose.getTranslation().x;
-    y = pose.getTranslation().y;
-    auto o = pose.getOrientation();
-    yaw = atan2(2*(o.oz*o.ow + o.ox*o.oy), 1 - 2*(o.oy*o.oy + o.oz*o.oz));
+// Sends a single "--set-location x0 y0 x1 y1" command over UART to the drive ESP32.
+// Matches InputManager::run()'s parsing on the firmware side.
+bool sendSetLocation(int esp_fd, float base_x, float base_y, float target_x, float target_y) {
+    char buf[128];
+    int len = snprintf(
+        buf, sizeof(buf),
+        "--set-location %.4f %.4f %.4f %.4f ",
+        base_x * 100.0f, base_y * 100.0f, target_x * 100.0f, target_y * 100.0f
+    );
+    if (len <= 0 || len >= static_cast<int>(sizeof(buf))) {
+        return false;
+    }
+    ssize_t written = write(esp_fd, buf, len);
+    return written == len;
 }
 
-vector<int> controlLoop(vector<float> next_coord,sl::Camera& zed){
-    //delcare the pose value and get current pose
-    float x,y,yaw;
-    getCurrentPose(zed, x, y, yaw);
+// Drives to (target_x, target_y) by repeatedly sending waypoint commands to the
+// ESP32 and polling ZED's own tracked pose until within tolerance or timeout.
+bool navigateToWaypoint(int esp_motor, sl::Camera &zed, float target_x, float target_y, float tolerance) {
+    constexpr int POLL_MS = 100;
+    constexpr int RESEND_TIMEOUT_MS = 8000;   // resend command if not converging
+    constexpr int OVERALL_TIMEOUT_MS = 30000; // give up on this waypoint entirely
 
-    //get the next coord in real world
-    float y_coord = next_coord[1];
-    float x_coord = next_coord[0];
+    float pose_x, pose_y, pose_yaw;
+    getCurrentPose(zed, pose_x, pose_y, pose_yaw);
 
-    //calculate dy and dx
-    float dy = y_coord - y;
-    float dx = x_coord - x;
-
-    //calculate vx and vy
-    float vx = KP * dx;
-    float vy = KP * dy;
-
-    //calculate the individual wheel speed
-    float FL =  vx - vy;
-    float FR =  vx + vy;
-    float CL =  vx;
-    float CR =  vx;
-    float RL =  vx + vy;
-    float RR =  vx - vy;
-
-    float maxWheel = max(max(max(abs(FL), abs(FR)), max(abs(RL), abs(RR))),max(abs(CL), abs(CR)));
-
-    if (maxWheel > 255.0) {
-        float scale = 255.0 / maxWheel;
-        FL *= scale;
-        FR *= scale;
-        RL *= scale;
-        RR *= scale;
-        CL *= scale;
-        CR *= scale;
+    if (!sendSetLocation(esp_motor, pose_x, pose_y, target_x, target_y)) {
+        std::cout << "failed to send waypoint to motor ESP\n";
+        return false;
     }
 
-    vector<int> wheel_speed = {int(FL), int(FR), int(RL), int(RR), int(CL), int(CR)};
+    int elapsed_ms = 0;
+    int since_last_send_ms = 0;
 
-    //return the wheel speed
-    return wheel_speed;
+    while (elapsed_ms < OVERALL_TIMEOUT_MS) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(POLL_MS));
+        elapsed_ms += POLL_MS;
+        since_last_send_ms += POLL_MS;
+
+        getCurrentPose(zed, pose_x, pose_y, pose_yaw);
+
+        float dx = target_x - pose_x;
+        float dy = target_y - pose_y;
+        float dist = std::sqrt(dx * dx + dy * dy);
+
+        if (dist <= tolerance) {
+            return true;
+        }
+
+        // rover hasn't reported progress in a while, resend the command
+        if (since_last_send_ms >= RESEND_TIMEOUT_MS) {
+            if (!sendSetLocation(esp_motor, pose_x, pose_y, target_x, target_y)) {
+                std::cout << "failed to resend waypoint to motor ESP\n";
+                return false;
+            }
+            since_last_send_ms = 0;
+        }
+    }
+
+    std::cout << "timed out navigating to waypoint (" << target_x << ", " << target_y << ")\n";
+    return false;
+}
+
+void getCurrentPose(sl::Camera &zed, float &pose_x, float &pose_y, float &pose_yaw) {
+    sl::Pose cam_pose;
+    zed.getPosition(cam_pose, sl::REFERENCE_FRAME::WORLD);
+
+    sl::Translation translation = cam_pose.getTranslation();
+    pose_x = translation.x;
+    pose_y = translation.y;
+
+    // ZED coordinate_system was set to RIGHT_HANDED_Z_UP, so yaw is rotation about Z
+    sl::float3 euler = cam_pose.getEulerAngles(false); // false = radians
+    pose_yaw = euler.z;
 }

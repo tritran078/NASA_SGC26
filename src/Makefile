@@ -1,6 +1,6 @@
 # Compiler and flags
 CXX = g++
-CXXFLAGS = -Ishared -I/usr/local/zed/include -I/usr/local/cuda-10.2/targets/aarch64-linux/include
+CXXFLAGS = -Ishared -I/usr/local/zed/include -I/usr/local/cuda-10.2/targets/aarch64-linux/include $(shell pkg-config --cflags opencv4)
 LDFLAGS = -L/usr/local/zed/lib -lsl_zed \
           $(shell pkg-config --cflags --libs opencv4) \
           -lcuda -lcudart -L/usr/local/cuda-10.2/targets/aarch64-linux/lib

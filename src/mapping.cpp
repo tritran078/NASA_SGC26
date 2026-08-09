@@ -3,6 +3,8 @@
 #include <cmath>
 #include <chrono>
 #include <cstdint>
+#include <opencv2/opencv.hpp>
+
 using namespace std;
 
 
@@ -139,3 +141,23 @@ vector<uint8_t> RunMappingSession(sl::Camera& zed, int scan_duration){
     return binary_map;
 }
 
+void displayOccupancyGrid(const vector<uint8_t>& binary_map, int width, int height, int scale) {
+    cv::Mat img(height, width, CV_8UC1);
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint8_t val = binary_map[y * width + x];
+            uint8_t pixel;
+            if (val == 0) pixel = 255;       // free = white
+            else if (val == 1) pixel = 0;    // occupied = black
+            else pixel = 127;                // unknown = gray
+            img.at<uint8_t>(y, x) = pixel;
+        }
+    }
+
+    cv::Mat resized;
+    cv::resize(img, resized, cv::Size(width * scale, height * scale), 0, 0, cv::INTER_NEAREST);
+
+    cv::imshow("Occupancy Grid", resized);
+    cv::waitKey(1);  // non-blocking, use 0 if you want it to pause and wait for a keypress
+}

@@ -21,12 +21,11 @@ int main(){
 
 
     //-------------- Constants ------------
-    const float TOLERANCE = 0.20; //tolerance for navigation = 20cm
+    const float TOLERANCE = 0.05; //tolerance for navigation = 20cm
 
     const float RESOLUTION = 0.08; //resolution of the grid map = 8cm
 
     const int RATE = 50; //50ms = 20hz
-
 
 
     //test open zed cam
@@ -41,10 +40,11 @@ int main(){
     //open UART serial connections to esp32
     int esp_Lora = openSerial("/dev/ttyUSB0", B115200); //open port to ESP LoRa
     int esp_cam_turn = openSerial("/dev/ttyUSB1", B115200); //open port to ESP camera turn
-    int esp_motor = openSerial("/dev/ttyUSB2", B115200); //open port to ESP motor
+    //int esp_motor = openSerial("/dev/ttyUSB2", B115200); //open port to ESP motor
 
 
     //if cannot open, return
+    
     if(esp_Lora < 0){
         std::cout << "failed to open serial port to the LoRa ESP";
         zed.close();
@@ -53,11 +53,11 @@ int main(){
         std::cout << "failed to open serial port to the camera turn ESP";
         zed.close();
         return 1;
-    } else if (esp_motor < 0){
+    } /* else if (esp_motor < 0){
         std::cout << "failed to open serial port to the motor ESP";
         zed.close();
         return 1;
-    }
+    } */
 
 
 
@@ -70,21 +70,22 @@ int main(){
 
     //---------------------- MAIN LOOP ----------------------
     while(true){
-
-        //--------- CAMERA TURNING CODE ---------
+        
+       //--------- CAMERA TURNING CODE ---------
         std::vector<int> start_signal = {1};
         bool turning = sendInts(esp_cam_turn, start_signal); //sendInts() signaling to start turning zed cam
         if (!turning) {std::cout << "failed to send start signal to camera turn ESP";}
-
+        
         //--------- MAPPING CODE ---------
-        std::vector<uint8_t> grid_map = RunMappingSession(zed, 10); //mapping
+        std::vector<uint8_t> grid_map = RunMappingSession(zed, 15); //mapping
+
 
         //--------- GET CURRENT POSE ---------
         float pose_x, pose_y, pose_yaw;
         getCurrentPose(zed, pose_x, pose_y, pose_yaw);
         int16_t grid_x = static_cast<int16_t>(std::round(pose_x / RESOLUTION));
         int16_t grid_y = static_cast<int16_t>(std::round(pose_y / RESOLUTION));
-
+        
         //--------- SEND GRID MAP AND POSE TO ESP LORA ---------
         bool sent_succeed = writeGridAndPose(esp_Lora, grid_map, grid_x, grid_y); //send grid map to LoRa ESP
         if (!sent_succeed) {std::cout << "failed to send grid map to LoRa ESP";}
@@ -99,27 +100,53 @@ int main(){
             continue; //nothing to drive to this cycle
         }
 
-        // --------- CONTROL CODE ---------
-        for (const twoway::Waypoint& wp : waypoints) {
-            //get next coord
-            std::vector<float> coord = {wp.x * RESOLUTION, wp.y * RESOLUTION};
-
-            float x,y,yaw;
-            getCurrentPose(zed, x,y,yaw);
-            float next_x = coord[0];
-            float next_y = coord[1];
-
-            std::string msg = "--set-location " + std::to_string(x) + " " + std::to_string(y) + " "
-                    + std::to_string(next_x) + " " + std::to_string(next_y);
-            write(esp_motor, msg.c_str(), msg.size());
-
-        }
-    }
     
+        // --------------print path in terminal-----------------
+        std::cout << "path: ";
+        for (const twoway::Waypoint& wp : waypoints) {
+            std::cout << "(" << wp.x << "," << wp.y << ") ";
+            }
+        std::cout << std::endl;
+        /*
+       std::vector<twoway::Waypoint> waypoints = {
+        {6, 0},
+        {6, 6},
+        {12, 6},
+        {12, 0}
+        };
+        
+        //std::vector<twoway::Waypoint> waypoints = {{6, 0},{6, -6}}; tested path
+
+        // --------- CONTROL CODE ---------
+        float current_x = 0.0f;
+        float current_y = 0.0f;
+
+        for (const twoway::Waypoint& wp : waypoints) {
+            float next_x = wp.x * RESOLUTION;
+            float next_y = wp.y * RESOLUTION;
+
+            bool sent = sendSetLocation(esp_motor, current_x, current_y, next_x, next_y);
+            if (!sent) {
+                std::cout << "failed to send waypoint (" << next_x << ", " << next_y << "), aborting path\n";
+                break;
+            }
+
+            std::cout << "navigating to (" << next_x << ", " << next_y << ") ... waiting 10s\n";
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+
+            current_x = next_x;
+            current_y = next_y;
+        }
+*/
+        std::this_thread::sleep_for(std::chrono::seconds(10)); //wait for 100 seconds before next cycle
+
+    }
+
     //close serial connections and zed cam
     closeSerial(esp_Lora);
     closeSerial(esp_cam_turn);
-    closeSerial(esp_motor);
+    //closeSerial(esp_motor);
     zed.close();
 
 }
+

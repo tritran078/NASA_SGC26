@@ -2,7 +2,12 @@
 #include <cstdint>
 #include <vector>
 #include <sl/Camera.hpp>
+#include <opencv2/opencv.hpp>
+
 using namespace std;
+
+extern const int MAP_WIDTH;
+extern const int MAP_HEIGHT;
 
 struct OccupancyGrid {
     int map_width, map_height;
@@ -21,7 +26,9 @@ struct OccupancyGrid {
     void bresenham(int x0, int y0, int x1, int y1);
     void updateCell(int x, int y, float delta);
     vector<uint8_t> getBinaryMap(float free_thresh = 0.4, float occ_thresh = 0.6);
+
 };
+void displayOccupancyGrid(const std::vector<uint8_t>& binary_map, int width, int height, int scale = 8);
 
 vector<uint8_t> RunMappingSession(sl::Camera& zed, int scan_duration = 10);
 
